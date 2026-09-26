@@ -4,13 +4,13 @@ import { OBJ, PAY, PAT, INV, FEE, PAYMENT_FOR } from "../config";
 import { list, create, update, get, and } from "../lib/api";
 import { mapPayment, mapInvoice, mapFee, mapPatient } from "../lib/models";
 import { isoToday, dateWrite, moneyWrite, money, num, toKnack } from "../lib/format";
-import { longDate, maskedPhone } from "../lib/dob";
+import { phoneLast4 } from "../lib/dob";
 import { logAudit } from "../lib/audit";
 import { requestOverride, fetchOverride, markOverrideUsed } from "../lib/overrides";
 import { receiptDoc, superbillDoc } from "../lib/docs";
 import { useSession, usePrint } from "../lib/context";
 import PatientSearch, { PatientForm } from "../components/PatientSearch";
-import { ChoiceGroup, ErrorBox, Field, Notice, isAmbiguous } from "../components/ui";
+import { ChoiceGroup, Drawer, ErrorBox, Field, Notice, isAmbiguous } from "../components/ui";
 
 let feeCache = null;
 function loadFees() {
@@ -24,12 +24,12 @@ function loadFees() {
 }
 export const clearFeeCache = () => { feeCache = null; };
 
-// Knack values are unchanged: Card maps to Credit Card / Debit Card / HSA Or FSA.
+// Knack values are unchanged: Card → Credit Card / Debit Card / HSA Or FSA; Other → Insurance.
 const TOP_METHODS = [
   { value: "Card", label: "Card" },
   { value: "Cash", label: "Cash" },
   { value: "Check", label: "Check" },
-  { value: "Insurance", label: "Insurance" },
+  { value: "Other", label: "Other" },
 ];
 const CARD_TYPES = [
   { value: "Credit Card", label: "Credit" },
@@ -39,21 +39,8 @@ const CARD_TYPES = [
 
 const emptyForm = () => ({
   dos: isoToday(), paymentFor: "Self-Pay Visit", feeId: "", amount: "", top: "Card", cardType: "Credit Card",
-  last4: "", txnRef: "", insName: "", memberId: "", group: "", cpt: "", icd: "", notes: "", invoiceId: "",
+  last4: "", txnRef: "", insName: "", memberId: "", group: "", cpt: "", icd: "", notes: "", invoiceId: "", receipt: "None",
 });
-
-function Steps({ step }) {
-  const items = ["Find patient", "Payment", "Done"];
-  return (
-    <ol className="steps" aria-label="Progress">
-      {items.map((s, i) => (
-        <li key={s} className={i === step ? "now" : i < step ? "past" : ""} aria-current={i === step ? "step" : undefined}>
-          <span className="step-n">{i + 1}</span>{s}
-        </li>
-      ))}
-    </ol>
-  );
-}
 
 export default function NewPayment({ base }) {
   const { user, isSuperAdmin } = useSession();
@@ -63,6 +50,7 @@ export default function NewPayment({ base }) {
   const preload = loc.state || {};
   const [patient, setPatient] = useState(null);
   const [editingPatient, setEditingPatient] = useState(false);
+  const [savedPatient, setSavedPatient] = useState(null);
   const [f, setF] = useState(emptyForm);
   const [errs, setErrs] = useState({});
   const [fees, setFees] = useState([]);
@@ -85,9 +73,9 @@ export default function NewPayment({ base }) {
   const last4Ref = useRef(null);
   const nextRef = useRef(null);
 
-  const method = f.top === "Card" ? f.cardType : f.top;
+  const method = f.top === "Card" ? f.cardType : f.top === "Other" ? "Insurance" : f.top;
   const isCard = f.top === "Card";
-  const needsIns = f.top === "Insurance" || ["Copay", "Deductible Or Coinsurance"].includes(f.paymentFor);
+  const needsIns = f.top === "Other" || ["Copay", "Deductible Or Coinsurance"].includes(f.paymentFor);
 
   // Price override: a fee-schedule service with a different amount needs super admin approval.
   const fee = fees.find((x) => x.id === f.feeId);
@@ -125,9 +113,22 @@ export default function NewPayment({ base }) {
 
   useEffect(() => { if (saved) nextRef.current?.focus(); }, [saved]);
 
+  // Change patient keeps whatever amount and method are already entered.
+  function changePatient() {
+    setPatient(null);
+    setOverride(null);
+    setOvReason("");
+    setOvErr(null);
+    setInvoices([]);
+    setDupe(null);
+    setF((cur) => ({ ...cur, insName: "", memberId: "", group: "", invoiceId: "" }));
+    setSearchKey((k) => k + 1);
+  }
+
   const startOver = useCallback(() => {
     if (inFlight.current) return;
     setSaved(null);
+    setSavedPatient(null);
     setPatient(null);
     setEditingPatient(false);
     setF(emptyForm());
@@ -160,7 +161,7 @@ export default function NewPayment({ base }) {
     if (!f.dos) e.dos = "Enter the date of service.";
     if (num(f.amount) <= 0) e.amount = "Enter an amount greater than zero.";
     if (isCard && !/^\d{4}$/.test(f.last4)) e.last4 = "Enter the last 4 digits of the card.";
-    if (f.top === "Insurance" && !f.insName.trim()) e.insName = "Enter the insurance name.";
+    if (f.top === "Other" && !f.insName.trim()) e.insName = "Enter the insurance name.";
     if (e.dos) setShowDetails(true);
     return e;
   }
@@ -271,8 +272,11 @@ export default function NewPayment({ base }) {
     if (a) warnings.push(a);
     setWarn(warnings.join(" ") || null);
     setSavedAt(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
-    setSaved({ ...p, patientName: p.patientName || patient.name });
+    const done = { ...p, patientName: p.patientName || patient.name };
+    setSaved(done);
+    setSavedPatient(patient);
     release();
+    if (f.receipt === "Print") printReceipt(done);
   }
 
   async function sendOverride() {
@@ -300,235 +304,238 @@ export default function NewPayment({ base }) {
     finally { setOvBusy(false); }
   }
 
-  async function printReceipt() {
-    print(receiptDoc(saved), { receipt: true });
-    if (saved.receiptSent !== "Printed") {
+  async function printReceipt(pay = saved) {
+    print(receiptDoc(pay), { receipt: true });
+    if (pay.receiptSent !== "Printed") {
       try {
-        await update(OBJ.payments, saved.id, { [PAY.receiptSent]: "Printed" });
-        setSaved({ ...saved, receiptSent: "Printed" });
+        await update(OBJ.payments, pay.id, { [PAY.receiptSent]: "Printed" });
+        setSaved((cur) => (cur && cur.id === pay.id ? { ...cur, receiptSent: "Printed" } : cur));
       } catch (ex) {
         setWarn(`Receipt printed, but the record wasn't marked as printed: ${ex.message}`);
       }
     }
   }
 
-  /* ---------- 3 · Done ---------- */
-  if (saved) {
-    return (
-      <div className="work">
-        <h1>New payment</h1>
-        <Steps step={2} />
-        <section className="done" aria-live="polite">
-          <p className="done-check" aria-hidden="true">✓</p>
-          <p className="done-title">Payment recorded</p>
-          <p className="done-amount">{money(saved.amount)}</p>
-          <p className="done-line">{saved.patientName}</p>
-          <p className="done-meta">{saved.method}{saved.last4 && ` •••• ${saved.last4}`}</p>
-          <p className="done-meta">Today · {savedAt} · Receipt #{saved.receiptNo}</p>
+  const amountLabel = num(f.amount) > 0 ? money(f.amount) : "";
+  const sp = savedPatient || patient;
+
+  return (
+    <div className="ws">
+      <h1>New payment</h1>
+      <ErrorBox error={!patient && !saved ? err : null} />
+
+      {saved ? (
+        /* ---------- Recorded: replaces the controls in place ---------- */
+        <section className="recorded" aria-live="polite">
+          <p className="recorded-title"><span className="tick" aria-hidden="true">✓</span>Payment recorded</p>
+          <p className="recorded-amount">{money(saved.amount)}</p>
+          <p className="recorded-name">{saved.patientName}</p>
+          <p className="quiet">{saved.method}{saved.last4 && ` •••• ${saved.last4}`}</p>
+          <p className="quiet">Today · {savedAt} · Receipt #{saved.receiptNo}</p>
           <Notice tone="warn" onClose={() => setWarn(null)}>{warn}</Notice>
-          <div className="row">
-            <button type="button" className="btn btn-primary" ref={nextRef} onClick={startOver}>New payment</button>
-          </div>
-          <div className="row row-quiet">
-            <button type="button" className="link" onClick={printReceipt}>Print receipt</button>
-            {(saved.cpt || saved.icd) && <button type="button" className="link" onClick={() => print(superbillDoc(saved, patient))}>Print superbill</button>}
+          <div className="row row-links">
+            <button type="button" className="link" onClick={() => printReceipt()}>{saved.receiptSent === "Printed" ? "Print receipt again" : "Print receipt"}</button>
+            {(saved.cpt || saved.icd) && <button type="button" className="link" onClick={() => print(superbillDoc(saved, sp))}>Superbill</button>}
             <button type="button" className="link" onClick={() => nav(`${base}/payments`, { state: { receipt: String(saved.receiptNo) } })}>View payment</button>
           </div>
-          {patient?.receiptPref && patient.receiptPref !== "None" && (
-            <p className="quiet">Prefers receipts by {patient.receiptPref.toLowerCase()}. Sending turns on once messaging is connected.</p>
+          <button type="button" className="btn btn-primary btn-record" ref={nextRef} onClick={startOver}>New payment</button>
+          {sp?.receiptPref && sp.receiptPref !== "None" && (
+            <p className="quiet small">Prefers receipts by {sp.receiptPref.toLowerCase()}. Sending turns on once messaging is connected.</p>
           )}
         </section>
-      </div>
-    );
-  }
-
-  /* ---------- 1 · Find patient ---------- */
-  if (!patient) {
-    return (
-      <div className="work">
-        <h1>New payment</h1>
-        <Steps step={0} />
-        <ErrorBox error={err} />
-        <PatientSearch key={searchKey} onSelect={(p) => { setErr(null); setPatient(p); }} />
-      </div>
-    );
-  }
-
-  /* ---------- 2 · Payment ---------- */
-  const amountLabel = num(f.amount) > 0 ? money(f.amount) : "";
-  return (
-    <div className="work">
-      <h1>New payment</h1>
-      <Steps step={1} />
-
-      {editingPatient ? (
-        <PatientForm
-          patientId={patient.id}
-          initial={{ ...patient, receiptPref: patient.receiptPref || "None" }}
-          onCancel={() => setEditingPatient(false)}
-          onSaved={(p, w) => { setPatient(p); setWarn(w); setEditingPatient(false); }}
-        />
       ) : (
-        <section className="strip" aria-label="Patient">
-          <div>
-            <p className="label">Patient</p>
-            <p className="identity-name">{patient.name}</p>
-            <p className="identity-meta">{longDate(patient.dob)}{maskedPhone(patient.phone) && <> · {maskedPhone(patient.phone)}</>}</p>
-          </div>
-          <div className="strip-actions">
-            <button type="button" className="link" onClick={() => setEditingPatient(true)}>Edit</button>
-            <button type="button" className="link" onClick={startOver}>Change</button>
-          </div>
-        </section>
-      )}
-      <Notice tone="warn" onClose={() => setWarn(null)}>{warn}</Notice>
-
-      {!editingPatient && (
-        <form className="step pay" onSubmit={save} noValidate>
-          {fees.length > 0 && (
-            <Field label="Service" optional hint="Fills in the standard self-pay price.">
-              {(p) => (
-                <select {...p} className="w-md" value={f.feeId} onChange={(e) => pickFee(e.target.value)}>
-                  <option value="">None</option>
-                  {fees.map((x) => <option key={x.id} value={x.id}>{x.name}{x.price ? ` — ${money(x.price)}` : ""}</option>)}
-                </select>
-              )}
-            </Field>
-          )}
-
-          <Field label="Amount" error={errs.amount} className="field-amount">
-            {(p) => (
-              <div className="money">
-                <span aria-hidden="true">$</span>
-                <input
-                  {...p}
-                  ref={amountRef}
-                  inputMode="decimal"
-                  autoComplete="off"
-                  placeholder="0.00"
-                  value={f.amount}
-                  onChange={(e) => { setF({ ...f, amount: e.target.value.replace(/[^0-9.]/g, "") }); if (errs.amount) setErrs({ ...errs, amount: null }); }}
-                  onBlur={() => num(f.amount) > 0 && setF((cur) => ({ ...cur, amount: num(cur.amount).toFixed(2) }))}
-                  onKeyDown={amountEnter}
-                />
-              </div>
-            )}
-          </Field>
-
-          {differs && isSuperAdmin && <p className="hint override-note">Scheduled price {money(scheduled)}. Changed by you as super admin.</p>}
-          {differs && !isSuperAdmin && (
-            <div className="override" role="region" aria-label="Price approval">
-              {approved ? (
-                <p className="override-ok">Override #{override.no} approved by {override.respondedBy}.</p>
-              ) : pending ? (
-                <>
-                  <p>Override #{override.no} is waiting for approval.{override.textStatus === "Sent" && " The super admin has been texted."}</p>
-                  <button type="button" className="link" onClick={checkOverride} disabled={ovBusy}>{ovBusy ? "Checking…" : "Check approval"}</button>
-                </>
-              ) : (
-                <>
-                  {override?.status === "Denied" && Math.abs(override.requested - num(f.amount)) < 0.005 && (
-                    <p className="override-denied">Override #{override.no} was denied by {override.respondedBy}{override.responseNote ? `: ${override.responseNote}` : "."}</p>
-                  )}
-                  <p>The scheduled price for {fee.name} is {money(scheduled)}. A different amount needs super admin approval.</p>
-                  <Field label="Reason" error={typeof ovErr === "string" ? ovErr : null}>
-                    {(p) => <input {...p} className="w-lg" autoComplete="off" value={ovReason} onChange={(e) => { setOvReason(e.target.value); setOvErr(null); }} />}
-                  </Field>
-                </>
-              )}
-              <button type="button" className="link" onClick={() => setF({ ...f, amount: scheduled.toFixed(2) })}>Use {money(scheduled)} instead</button>
-            </div>
-          )}
-
-          <div className="field">
-            <span className="label">Payment method</span>
-            <ChoiceGroup label="Payment method" options={TOP_METHODS} value={f.top} onChange={(v) => setF({ ...f, top: v })} onEnter={methodEnter} firstRef={methodRef} />
-          </div>
-
-          {isCard && (
-            <div className="sub">
-              <ChoiceGroup label="Card type" small options={CARD_TYPES} value={f.cardType} onChange={(v) => setF({ ...f, cardType: v })} onEnter={methodEnter} />
-              <div className="cols-2">
-                <Field label="Last 4 digits" error={errs.last4}>
-                  {(p) => (
-                    <input {...p} ref={last4Ref} className="w-sm" inputMode="numeric" maxLength={4} autoComplete="off" value={f.last4}
-                      onChange={(e) => { setF({ ...f, last4: e.target.value.replace(/\D/g, "") }); if (errs.last4) setErrs({ ...errs, last4: null }); }} />
-                  )}
-                </Field>
-                <Field label="Sphere transaction ID" optional>
-                  {(p) => <input {...p} autoComplete="off" value={f.txnRef} onChange={set("txnRef")} />}
-                </Field>
-              </div>
-            </div>
-          )}
-          {f.top === "Check" && (
-            <div className="sub">
-              <Field label="Check number" optional>{(p) => <input {...p} className="w-md" autoComplete="off" value={f.txnRef} onChange={set("txnRef")} />}</Field>
-            </div>
-          )}
-          {needsIns && (
-            <div className="sub">
-              <div className="cols-2">
-                <Field label="Insurance" error={errs.insName} optional={f.top !== "Insurance"}>{(p) => <input {...p} autoComplete="off" value={f.insName} onChange={set("insName")} />}</Field>
-                <Field label="Member ID" optional>{(p) => <input {...p} autoComplete="off" value={f.memberId} onChange={set("memberId")} />}</Field>
-                <Field label="Group number" optional>{(p) => <input {...p} autoComplete="off" value={f.group} onChange={set("group")} />}</Field>
-              </div>
-            </div>
-          )}
-
-          {invoices.length > 0 && (
-            <Field label="Apply to invoice" optional>
-              {(p) => (
-                <select {...p} className="w-md" value={f.invoiceId} onChange={set("invoiceId")}>
-                  <option value="">No invoice</option>
-                  {invoices.map((i) => <option key={i.id} value={i.id}>#{i.no} · balance {money(i.amountDue - i.amountPaid)}</option>)}
-                </select>
-              )}
-            </Field>
-          )}
-
-          <div className="details">
-            {!showDetails && <span className="quiet">{f.paymentFor} · {f.dos === isoToday() ? "Today" : f.dos}</span>}
-            <button type="button" className="link" aria-expanded={showDetails} onClick={() => setShowDetails(!showDetails)}>
-              {showDetails ? "Hide details" : "Edit details"}
-            </button>
-            {showDetails && (
-              <div className="details-body">
-                <div className="cols-2">
-                  <Field label="Payment for">
-                    {(p) => <select {...p} value={f.paymentFor} onChange={set("paymentFor")}>{PAYMENT_FOR.map((o) => <option key={o}>{o}</option>)}</select>}
-                  </Field>
-                  <Field label="Date of service" error={errs.dos}>
-                    {(p) => <input {...p} type="date" value={f.dos} max={isoToday()} onChange={set("dos")} />}
-                  </Field>
-                  <Field label="CPT codes" optional hint="Separate with commas.">{(p) => <input {...p} autoComplete="off" value={f.cpt} onChange={set("cpt")} />}</Field>
-                  <Field label="ICD-10 codes" optional hint="For superbills.">{(p) => <input {...p} autoComplete="off" value={f.icd} onChange={set("icd")} />}</Field>
-                </div>
-                <Field label="Note" optional>{(p) => <textarea {...p} rows={2} value={f.notes} onChange={set("notes")} />}</Field>
-              </div>
-            )}
-          </div>
-
-          <ErrorBox error={err} />
-          {dupe ? (
-            <div className="msg msg-warn" role="alert">
-              <p>Receipt #{dupe.receiptNo} already records {money(dupe.amount)} from this patient for {dupe.dos}. Record this as a second, separate payment?</p>
-              <div className="row">
-                <button type="button" className="btn btn-primary" onClick={() => save(null, true)} disabled={busy}>{busy ? "Recording payment…" : "Yes, record it"}</button>
-                <button type="button" className="btn btn-secondary" onClick={() => setDupe(null)} disabled={busy}>No</button>
-              </div>
-            </div>
+        <>
+          {/* ---------- Patient ---------- */}
+          <p className="section-label">Patient</p>
+          <div className="patient-slot">
+          {!patient ? (
+            <PatientSearch key={searchKey} onSelect={(p) => { setErr(null); setPatient(p); }} />
           ) : (
-            <div className="row">
-              <button className="btn btn-primary btn-wide" disabled={busy || ovBusy}>
-                {busy ? "Recording payment…"
-                  : blocked ? (pending ? (ovBusy ? "Checking…" : "Check approval") : (ovBusy ? "Sending request…" : "Request price approval"))
-                  : amountLabel ? `Record ${amountLabel} payment` : "Record payment"}
-              </button>
+            <div className="who-line">
+              <div>
+                <p className="identity-name">{patient.name}</p>
+                <p className="quiet">{patient.dob}{phoneLast4(patient.phone) && ` · phone ending ${phoneLast4(patient.phone)}`}</p>
+              </div>
+              <div className="who-actions">
+                <button type="button" className="link link-quiet" onClick={() => setEditingPatient(true)}>Edit</button>
+                <button type="button" className="link" onClick={changePatient}>Change</button>
+              </div>
             </div>
           )}
-          <p className="quiet">Collected by {user.name}</p>
-        </form>
+          </div>
+          <Notice tone="warn" onClose={() => setWarn(null)}>{warn}</Notice>
+          <hr className="rule" />
+
+          {/* ---------- Transaction: present but inactive until a patient is chosen ---------- */}
+          <form className={`txn ${patient ? "" : "txn-idle"}`} onSubmit={save} noValidate aria-disabled={!patient}>
+            <fieldset disabled={!patient}>
+              <legend className="sr-only">Payment</legend>
+
+              {fees.length > 0 && (
+                <Field label="Service" optional>
+                  {(p) => (
+                    <select {...p} className="w-md" value={f.feeId} onChange={(e) => pickFee(e.target.value)}>
+                      <option value="">None</option>
+                      {fees.map((x) => <option key={x.id} value={x.id}>{x.name}{x.price ? ` — ${money(x.price)}` : ""}</option>)}
+                    </select>
+                  )}
+                </Field>
+              )}
+
+              <Field label="Amount" error={errs.amount}>
+                {(p) => (
+                  <div className="money">
+                    <span aria-hidden="true">$</span>
+                    <input
+                      {...p}
+                      ref={amountRef}
+                      inputMode="decimal"
+                      autoComplete="off"
+                      placeholder="0.00"
+                      value={f.amount}
+                      onChange={(e) => { setF({ ...f, amount: e.target.value.replace(/[^0-9.]/g, "") }); if (errs.amount) setErrs({ ...errs, amount: null }); }}
+                      onBlur={() => num(f.amount) > 0 && setF((cur) => ({ ...cur, amount: num(cur.amount).toFixed(2) }))}
+                      onKeyDown={amountEnter}
+                    />
+                  </div>
+                )}
+              </Field>
+
+              {differs && isSuperAdmin && <p className="hint override-note">Scheduled price {money(scheduled)}. Changed by you as super admin.</p>}
+              {differs && !isSuperAdmin && (
+                <div className="override" role="region" aria-label="Price approval">
+                  {approved ? (
+                    <p className="override-ok">Override #{override.no} approved by {override.respondedBy}.</p>
+                  ) : pending ? (
+                    <>
+                      <p>Override #{override.no} is waiting for approval.{override.textStatus === "Sent" && " The super admin has been texted."}</p>
+                      <button type="button" className="link" onClick={checkOverride} disabled={ovBusy}>{ovBusy ? "Checking…" : "Check approval"}</button>
+                    </>
+                  ) : (
+                    <>
+                      {override?.status === "Denied" && Math.abs(override.requested - num(f.amount)) < 0.005 && (
+                        <p className="override-denied">Override #{override.no} was denied by {override.respondedBy}{override.responseNote ? `: ${override.responseNote}` : "."}</p>
+                      )}
+                      <p>Scheduled price for {fee.name} is {money(scheduled)}. A different amount needs super admin approval.</p>
+                      <Field label="Reason" error={typeof ovErr === "string" ? ovErr : null}>
+                        {(p) => <input {...p} autoComplete="off" value={ovReason} onChange={(e) => { setOvReason(e.target.value); setOvErr(null); }} />}
+                      </Field>
+                    </>
+                  )}
+                  <button type="button" className="link" onClick={() => setF({ ...f, amount: scheduled.toFixed(2) })}>Use {money(scheduled)} instead</button>
+                </div>
+              )}
+
+              <div className="field">
+                <span className="label">Payment method</span>
+                <ChoiceGroup label="Payment method" options={TOP_METHODS} value={f.top} onChange={(v) => setF({ ...f, top: v })} onEnter={methodEnter} firstRef={methodRef} />
+              </div>
+
+              {isCard && (
+                <div className="sub">
+                  <ChoiceGroup label="Card type" small options={CARD_TYPES} value={f.cardType} onChange={(v) => setF({ ...f, cardType: v })} onEnter={methodEnter} />
+                  <div className="pair">
+                    <Field label="Last 4" error={errs.last4}>
+                      {(p) => (
+                        <input {...p} ref={last4Ref} className="w-sm" inputMode="numeric" maxLength={4} autoComplete="off" value={f.last4}
+                          onChange={(e) => { setF({ ...f, last4: e.target.value.replace(/\D/g, "") }); if (errs.last4) setErrs({ ...errs, last4: null }); }} />
+                      )}
+                    </Field>
+                    <Field label="Sphere transaction ID" optional>{(p) => <input {...p} autoComplete="off" value={f.txnRef} onChange={set("txnRef")} />}</Field>
+                  </div>
+                </div>
+              )}
+              {f.top === "Check" && (
+                <div className="sub">
+                  <Field label="Check number" optional>{(p) => <input {...p} className="w-md" autoComplete="off" value={f.txnRef} onChange={set("txnRef")} />}</Field>
+                </div>
+              )}
+              {needsIns && (
+                <div className="sub">
+                  {f.top === "Other" && <p className="quiet small">Recorded as insurance.</p>}
+                  <div className="pair">
+                    <Field label="Insurance" error={errs.insName} optional={f.top !== "Other"}>{(p) => <input {...p} autoComplete="off" value={f.insName} onChange={set("insName")} />}</Field>
+                    <Field label="Member ID" optional>{(p) => <input {...p} autoComplete="off" value={f.memberId} onChange={set("memberId")} />}</Field>
+                  </div>
+                </div>
+              )}
+
+              <div className="pair">
+                <Field label="Receipt">
+                  {(p) => (
+                    <select {...p} value={f.receipt} onChange={set("receipt")}>
+                      <option>None</option>
+                      <option>Print</option>
+                    </select>
+                  )}
+                </Field>
+                {invoices.length > 0 && (
+                  <Field label="Invoice" optional>
+                    {(p) => (
+                      <select {...p} value={f.invoiceId} onChange={set("invoiceId")}>
+                        <option value="">None</option>
+                        {invoices.map((i) => <option key={i.id} value={i.id}>#{i.no} · {money(i.amountDue - i.amountPaid)} due</option>)}
+                      </select>
+                    )}
+                  </Field>
+                )}
+              </div>
+
+              <div className="details">
+                {!showDetails && <span className="quiet">{f.paymentFor} · {f.dos === isoToday() ? "Today" : f.dos}</span>}
+                <button type="button" className="link link-quiet" aria-expanded={showDetails} onClick={() => setShowDetails(!showDetails)}>
+                  {showDetails ? "Hide details" : "Details"}
+                </button>
+                {showDetails && (
+                  <div className="details-body">
+                    <div className="pair">
+                      <Field label="Payment for">
+                        {(p) => <select {...p} value={f.paymentFor} onChange={set("paymentFor")}>{PAYMENT_FOR.map((o) => <option key={o}>{o}</option>)}</select>}
+                      </Field>
+                      <Field label="Date of service" error={errs.dos}>
+                        {(p) => <input {...p} type="date" value={f.dos} max={isoToday()} onChange={set("dos")} />}
+                      </Field>
+                      <Field label="CPT" optional>{(p) => <input {...p} autoComplete="off" value={f.cpt} onChange={set("cpt")} />}</Field>
+                      <Field label="ICD-10" optional>{(p) => <input {...p} autoComplete="off" value={f.icd} onChange={set("icd")} />}</Field>
+                    </div>
+                    {needsIns && <Field label="Group number" optional>{(p) => <input {...p} className="w-md" autoComplete="off" value={f.group} onChange={set("group")} />}</Field>}
+                    <Field label="Note" optional>{(p) => <textarea {...p} rows={2} value={f.notes} onChange={set("notes")} />}</Field>
+                  </div>
+                )}
+              </div>
+
+              <ErrorBox error={patient ? err : null} />
+              {dupe ? (
+                <div className="msg msg-warn" role="alert">
+                  <p>Receipt #{dupe.receiptNo} already records {money(dupe.amount)} from this patient for {dupe.dos}. Record this as a second, separate payment?</p>
+                  <div className="row row-tight">
+                    <button type="button" className="btn btn-primary" onClick={() => save(null, true)} disabled={busy}>{busy ? "Recording payment…" : "Yes, record it"}</button>
+                    <button type="button" className="btn btn-secondary" onClick={() => setDupe(null)} disabled={busy}>No</button>
+                  </div>
+                </div>
+              ) : (
+                <button className="btn btn-primary btn-record" disabled={!patient || busy || ovBusy}>
+                  {busy ? "Recording payment…"
+                    : blocked ? (pending ? (ovBusy ? "Checking…" : "Check approval") : (ovBusy ? "Sending request…" : "Request price approval"))
+                    : amountLabel ? `Record ${amountLabel}` : "Record payment"}
+                </button>
+              )}
+            </fieldset>
+          </form>
+          {patient && <p className="quiet small collected">Collected by {user.name}</p>}
+        </>
+      )}
+
+      {editingPatient && patient && (
+        <Drawer title="Patient details" onClose={() => setEditingPatient(false)}>
+          <PatientForm
+            bare
+            patientId={patient.id}
+            initial={{ ...patient, receiptPref: patient.receiptPref || "None" }}
+            onCancel={() => setEditingPatient(false)}
+            onSaved={(p, w) => { setPatient(p); setWarn(w); setEditingPatient(false); }}
+          />
+        </Drawer>
       )}
     </div>
   );

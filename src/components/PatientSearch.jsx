@@ -3,15 +3,15 @@ import { OBJ, PAT, RECEIPT_PREFS } from "../config";
 import { list, create, update, and } from "../lib/api";
 import { mapPatient } from "../lib/models";
 import { toKnack, dateWrite, phoneWrite, isoToday } from "../lib/format";
-import { parseDob, longDate, maskedPhone, phoneLast4 } from "../lib/dob";
+import { parseDob, longDate, phoneLast4 } from "../lib/dob";
 import { logAudit } from "../lib/audit";
 import { useSession } from "../lib/context";
-import { ErrorBox, Field } from "./ui";
+import { Drawer, ErrorBox, Field } from "./ui";
 
 const blank = { first: "", last: "", dob: "", phone: "", email: "", receiptPref: "None", insName: "", memberId: "", group: "" };
 
 /* ---------- Add / edit patient ---------- */
-export function PatientForm({ initial, patientId, onSaved, onCancel }) {
+export function PatientForm({ initial, patientId, onSaved, onCancel, bare }) {
   const { user } = useSession();
   const [f, setF] = useState({ ...blank, ...initial });
   const [errs, setErrs] = useState({});
@@ -71,8 +71,8 @@ export function PatientForm({ initial, patientId, onSaved, onCancel }) {
   }
 
   return (
-    <form className="step" onSubmit={save} noValidate>
-      <h2>{editing ? "Patient details" : "Add patient"}</h2>
+    <form className="patient-form" onSubmit={save} noValidate>
+      {!bare && <h2>{editing ? "Patient details" : "Add patient"}</h2>}
 
       <fieldset className="group">
         <legend>Identity</legend>
@@ -134,193 +134,158 @@ export function PatientForm({ initial, patientId, onSaved, onCancel }) {
   );
 }
 
-/* ---------- Search → confirm ---------- */
-export default function PatientSearch({ onSelect }) {
+/* ---------- Find patient ----------
+   One stable block: input row, then (only if needed) a short result list or "no patient".
+   A single match is selected immediately — the caller moves focus onward. */
+export default function PatientSearch({ onSelect, autoFocus = true }) {
   const [mode, setMode] = useState("dob"); // dob | text
   const [dobText, setDobText] = useState("");
   const [query, setQuery] = useState("");
   const [fieldErr, setFieldErr] = useState(null);
-  const [state, setState] = useState("idle"); // idle | searching | found | multiple | none | add | error
+  const [state, setState] = useState("idle"); // idle | searching | multiple | none | error
   const [results, setResults] = useState([]);
   const [err, setErr] = useState(null);
   const [lastSearch, setLastSearch] = useState("");
+  const [adding, setAdding] = useState(false);
   const inputRef = useRef(null);
-  const continueRef = useRef(null);
   const listRef = useRef(null);
+  const addRef = useRef(null);
 
-  useEffect(() => { if (state === "idle") inputRef.current?.focus(); }, [state, mode]);
+  useEffect(() => { if (autoFocus) inputRef.current?.focus(); }, [autoFocus, mode]);
   useEffect(() => {
-    if (state === "found") continueRef.current?.focus();
     if (state === "multiple") listRef.current?.querySelector("button")?.focus();
+    if (state === "none") addRef.current?.focus();
   }, [state]);
 
-  function reset() {
+  function again() {
     setState("idle");
     setResults([]);
     setErr(null);
     setFieldErr(null);
+    setTimeout(() => { inputRef.current?.focus(); inputRef.current?.select?.(); }, 0);
   }
 
-  async function run(filters, label) {
+  function settle(rows) {
+    setResults(rows);
+    if (rows.length === 1) { setState("idle"); onSelect(rows[0]); }
+    else setState(rows.length === 0 ? "none" : "multiple");
+  }
+
+  async function run(filters, label, narrow) {
     setState("searching");
     setErr(null);
     setLastSearch(label);
     try {
       const d = await list(OBJ.patients, { filters, sort: PAT.name, order: "asc", perPage: 50 });
-      const rows = (d.records || []).map(mapPatient);
-      setResults(rows);
-      setState(rows.length === 0 ? "none" : rows.length === 1 ? "found" : "multiple");
-      return rows;
+      let rows = (d.records || []).map(mapPatient);
+      if (narrow) rows = rows.filter(narrow);
+      settle(rows);
     } catch (e) {
       setErr(e);
       setState("error");
-      return [];
     }
   }
 
   async function search(e) {
     e?.preventDefault();
+    if (state === "searching") return;
     setFieldErr(null);
+    const notTest = { field: PAT.recordType, operator: "is not", value: "Test" };
     if (mode === "dob") {
       const r = parseDob(dobText);
       if (r.error) { setFieldErr(r.error); return; }
       setDobText(r.display);
-      await run(and(
-        { field: PAT.dob, operator: "is", value: toKnack(r.iso) },
-        { field: PAT.recordType, operator: "is not", value: "Test" },
-      ), r.display);
+      await run(and({ field: PAT.dob, operator: "is", value: toKnack(r.iso) }, notTest), r.display);
     } else {
       const q = query.trim();
       const digits = q.replace(/\D/g, "");
       if (digits.length >= 4) {
-        const rows = await run(and(
-          { field: PAT.phone, operator: "contains", value: digits.slice(-4) },
-          { field: PAT.recordType, operator: "is not", value: "Test" },
-        ), q);
-        if (digits.length > 4) {
-          const narrowed = rows.filter((p) => p.phone.replace(/\D/g, "").endsWith(digits.slice(-10)));
-          setResults(narrowed);
-          setState(narrowed.length === 0 ? "none" : narrowed.length === 1 ? "found" : "multiple");
-        }
+        await run(and({ field: PAT.phone, operator: "contains", value: digits.slice(-4) }, notTest), q,
+          digits.length > 4 ? (p) => p.phone.replace(/\D/g, "").endsWith(digits.slice(-10)) : null);
       } else if (q.length >= 2) {
-        await run(and(
-          { field: PAT.name, operator: "contains", value: q },
-          { field: PAT.recordType, operator: "is not", value: "Test" },
-        ), q);
+        await run(and({ field: PAT.name, operator: "contains", value: q }, notTest), q);
       } else {
         setFieldErr("Enter at least 2 letters of a name, or 4 digits of a phone number.");
       }
     }
   }
 
-  function switchMode() {
-    setMode(mode === "dob" ? "text" : "dob");
-    reset();
-  }
-
-  if (state === "add") {
-    const pre = mode === "dob" ? dobText : "";
-    return <PatientForm initial={{ dob: pre }} onCancel={reset} onSaved={(p) => onSelect(p)} />;
-  }
-
-  if (state === "found") {
-    const p = results[0];
-    return (
-      <section className="step" aria-labelledby="found-h">
-        <p className="eyebrow" id="found-h"><span aria-hidden="true">✓</span> Patient found</p>
-        <p className="identity-name">{p.name}</p>
-        <p className="identity-meta">{longDate(p.dob)}{maskedPhone(p.phone) && <> · {maskedPhone(p.phone)}</>}</p>
-        <div className="row">
-          <button type="button" className="btn btn-primary" ref={continueRef} onClick={() => onSelect(p)}>Continue to payment</button>
-        </div>
-        <p className="quiet">Not the right patient? <button type="button" className="link" onClick={reset}>Search again</button></p>
-      </section>
-    );
-  }
-
-  if (state === "multiple") {
-    return (
-      <section className="step" aria-labelledby="multi-h">
-        <h2 id="multi-h">Select patient</h2>
-        <p className="quiet">{results.length} patients match {lastSearch}.</p>
-        <ul className="pick-list" ref={listRef}>
-          {results.map((p, i) => (
-            <li key={p.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(p)}
-                onKeyDown={(e) => {
-                  const items = listRef.current.querySelectorAll("button");
-                  if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(i + 1, items.length - 1)].focus(); }
-                  if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(i - 1, 0)].focus(); }
-                }}
-              >
-                <span className="pick-name">{p.name}</span>
-                <span className="pick-meta">
-                  {longDate(p.dob)}{phoneLast4(p.phone) ? ` · phone ending ${phoneLast4(p.phone)}` : " · no phone on file"}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="row">
-          <button type="button" className="btn btn-tertiary" onClick={reset}>Search again</button>
-          <button type="button" className="btn btn-tertiary" onClick={() => setState("add")}>Add new patient</button>
-        </div>
-      </section>
-    );
-  }
-
-  if (state === "none") {
-    return (
-      <section className="step" aria-labelledby="none-h">
-        <h2 id="none-h">No patient found</h2>
-        <p className="quiet">No patient matches {lastSearch}.</p>
-        <div className="row">
-          <button type="button" className="btn btn-secondary" onClick={reset}>Search again</button>
-          <button type="button" className="btn btn-primary" onClick={() => setState("add")} autoFocus>Add new patient</button>
-        </div>
-      </section>
-    );
-  }
-
+  const isDob = mode === "dob";
   return (
-    <form className="step" onSubmit={search} noValidate>
-      <h2>Find patient</h2>
-      {mode === "dob" ? (
-        <Field label="Date of birth" hint="MM/DD/YYYY" error={fieldErr}>
+    <div className="find">
+      <form onSubmit={search} noValidate>
+        <Field label={isDob ? "Date of birth" : "Name or phone"} hint={isDob ? "MM/DD/YYYY" : "Last name, full name, or phone"} error={fieldErr}>
           {(p) => (
-            <input
-              {...p}
-              ref={inputRef}
-              data-search
-              className="w-dob"
-              inputMode="numeric"
-              autoComplete="off"
-              value={dobText}
-              onChange={(e) => { setDobText(e.target.value); if (fieldErr) setFieldErr(null); }}
-              onBlur={() => { const r = parseDob(dobText); if (!r.error) setDobText(r.display); }}
-            />
+            <div className="find-row">
+              <input
+                {...p}
+                ref={inputRef}
+                data-search
+                className={isDob ? "w-dob" : "w-md"}
+                inputMode={isDob ? "numeric" : "text"}
+                autoComplete="off"
+                value={isDob ? dobText : query}
+                onChange={(e) => { (isDob ? setDobText : setQuery)(e.target.value); if (fieldErr) setFieldErr(null); if (state !== "idle" && state !== "searching") setState("idle"); }}
+                onBlur={() => { if (isDob) { const r = parseDob(dobText); if (!r.error) setDobText(r.display); } }}
+              />
+              <button className="btn btn-secondary" disabled={state === "searching"}>{state === "searching" ? "Searching…" : "Find"}</button>
+            </div>
           )}
         </Field>
-      ) : (
-        <Field label="Name or phone" hint="Last name, full name, or phone number" error={fieldErr}>
-          {(p) => (
-            <input {...p} ref={inputRef} data-search className="w-md" autoComplete="off" value={query}
-              onChange={(e) => { setQuery(e.target.value); if (fieldErr) setFieldErr(null); }} />
-          )}
-        </Field>
-      )}
-      {state === "error" && <ErrorBox error={`Patient search failed. Try again. (${err?.message || "no details"})`} />}
-      <div className="row">
-        <button className="btn btn-primary" disabled={state === "searching"}>
-          {state === "searching" ? "Searching…" : "Continue"}
-        </button>
-        <button type="button" className="btn btn-tertiary" onClick={switchMode}>
-          {mode === "dob" ? "Search by name or phone" : "Search by date of birth"}
-        </button>
-      </div>
+      </form>
+      <button type="button" className="link link-quiet" onClick={() => { setMode(isDob ? "text" : "dob"); again(); }}>
+        {isDob ? "Search by name or phone" : "Search by date of birth"}
+      </button>
       {state === "searching" && <span className="sr-only" role="status">Searching…</span>}
-    </form>
+
+      {state === "error" && <ErrorBox error={`Patient search failed. Try again. (${err?.message || "no details"})`} />}
+
+      {state === "multiple" && (
+        <div className="find-results">
+          <p className="quiet small">{results.length} patients match {lastSearch}. Choose one.</p>
+          <ul className="pick-list" ref={listRef}>
+            {results.map((p, i) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(p)}
+                  onKeyDown={(e) => {
+                    const items = listRef.current.querySelectorAll("button");
+                    if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(i + 1, items.length - 1)].focus(); }
+                    if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(i - 1, 0)].focus(); }
+                    if (e.key === "Escape") again();
+                  }}
+                >
+                  <span className="pick-name">{p.name}</span>
+                  <span className="pick-meta">{longDate(p.dob)}{phoneLast4(p.phone) ? ` · phone ending ${phoneLast4(p.phone)}` : " · no phone on file"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="link" onClick={() => setAdding(true)}>None of these — add patient</button>
+        </div>
+      )}
+
+      {state === "none" && (
+        <div className="find-results" role="status">
+          <p><strong>No patient found</strong> <span className="quiet">for {lastSearch}.</span></p>
+          <div className="row row-tight">
+            <button type="button" className="btn btn-secondary" ref={addRef} onClick={() => setAdding(true)}>Add new patient</button>
+            <button type="button" className="link" onClick={again}>Search again</button>
+          </div>
+        </div>
+      )}
+
+      {adding && (
+        <Drawer title="Add patient" onClose={() => setAdding(false)}>
+          <PatientForm
+            bare
+            initial={{ dob: isDob ? dobText : "" }}
+            onCancel={() => setAdding(false)}
+            onSaved={(p) => { setAdding(false); again(); onSelect(p); }}
+          />
+        </Drawer>
+      )}
+    </div>
   );
 }

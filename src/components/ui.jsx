@@ -198,3 +198,16 @@ export function ConfirmationDialog({ title, children, confirmLabel, busyLabel, b
 export function isAmbiguous(e) {
   return !(e instanceof ApiError) || e.status >= 500;
 }
+
+// Small security notice shown on sign-in screens and in the sidebar.
+export function HipaaNote({ className = "", stacked = false }) {
+  return (
+    <p className={`hipaa ${className}`}>
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+        <path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <rect x="3" y="7" width="10" height="7.5" rx="1.5" fill="currentColor" />
+      </svg>
+      {stacked ? <span>HIPAA compliant<br />Authorized staff only</span> : "HIPAA compliant · Authorized staff only"}
+    </p>
+  );
+}

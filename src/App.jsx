@@ -5,13 +5,14 @@ import { SessionProvider, PrintProvider, useSession } from "./lib/context";
 import FrontDeskView from "./views/FrontDeskView";
 import ManagerView from "./views/ManagerView";
 import SuperAdminView from "./views/SuperAdminView";
-import { ErrorBox } from "./components/ui";
+import { ErrorBox, HipaaNote } from "./components/ui";
 
 function Splash({ children }) {
   return (
     <div className="splash">
       <div className="splash-card">
         <img className="splash-logo" src="/brand/logo.png" alt="Franklin Park Express Care" width="513" height="174" />
+        <HipaaNote className="hipaa-center" />
         {children}
       </div>
     </div>
@@ -50,7 +51,7 @@ function Login() {
       {reason && <p className="quiet">{reason}</p>}
       <button type="button" className="btn btn-primary btn-wide" onClick={() => startLogin().catch(setErr)} autoFocus>Sign in</button>
       <ErrorBox error={err} />
-      <p className="quiet small">Staff only.</p>
+      
     </Splash>
   );
 }

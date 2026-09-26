@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { logout } from "../lib/auth";
 import { useSession, usePrint } from "../lib/context";
 import { IDLE_MINUTES } from "../config";
+import { HipaaNote } from "./ui";
 
 const isTyping = (el) => el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable);
 
@@ -79,6 +80,7 @@ export default function Layout({ groups, base, roleLabel, children }) {
               Narrow receipt paper
             </label>
             <button type="button" className="link" onClick={() => logout()}>Sign out</button>
+            <HipaaNote stacked />
           </div>
         </nav>
       </aside>

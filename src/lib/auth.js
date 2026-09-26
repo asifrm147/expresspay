@@ -39,7 +39,7 @@ async function tokenCall(body) {
   return data;
 }
 
-export async function startLogin() {
+export async function startLogin({ replace = false } = {}) {
   const verifier = b64url(rand(48));
   const challenge = b64url(await sha256(verifier));
   const state = b64url(rand(16));
@@ -51,7 +51,8 @@ export async function startLogin() {
   u.searchParams.set("code_challenge", challenge);
   u.searchParams.set("code_challenge_method", "S256");
   u.searchParams.set("state", state);
-  window.location.assign(u.toString());
+  if (replace) window.location.replace(u.toString());
+  else window.location.assign(u.toString());
 }
 
 export async function completeLogin(search) {

@@ -18,10 +18,33 @@ function Splash({ children }) {
   );
 }
 
+// Go straight to Knack's sign-in page, so staff see "Sign in" in one place.
+// Stay on this screen instead when there's something to explain (automatic sign-out),
+// or when an automatic attempt just happened, so a failing sign-in can never loop.
+const AUTO_KEY = "fpx.autoLoginAt";
+function shouldAutoLogin(reason) {
+  if (reason) return false;
+  try {
+    const last = Number(sessionStorage.getItem(AUTO_KEY) || 0);
+    return Date.now() - last > 60000;
+  } catch { return true; }
+}
+
 function Login() {
   const reason = new URLSearchParams(useLocation().search).get("reason");
   const [err, setErr] = useState(null);
+  const [auto] = useState(() => !getTokens() && shouldAutoLogin(reason));
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (!auto || started.current) return;
+    started.current = true;
+    try { sessionStorage.setItem(AUTO_KEY, String(Date.now())); } catch { /* best effort */ }
+    startLogin({ replace: true }).catch(setErr);
+  }, [auto]);
+
   if (getTokens()) return <Navigate to="/" replace />;
+  if (auto && !err) return <Splash><p className="quiet" role="status">Opening sign-in…</p></Splash>;
   return (
     <Splash>
       {reason && <p className="quiet">{reason}</p>}
@@ -40,7 +63,9 @@ function Callback() {
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
-    completeLogin(loc.search).then(() => nav("/", { replace: true })).catch(setErr);
+    completeLogin(loc.search)
+      .then(() => { try { sessionStorage.removeItem(AUTO_KEY); } catch { /* ignore */ } nav("/", { replace: true }); })
+      .catch(setErr);
   }, [loc.search, nav]);
   return (
     <Splash>

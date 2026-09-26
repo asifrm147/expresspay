@@ -35,7 +35,7 @@ const PrintCtx = createContext(null);
 export const usePrint = () => useContext(PrintCtx);
 
 export function PrintProvider({ children }) {
-  useEffect(() => { new Image().src = "/brand/mark.svg"; }, []);
+  useEffect(() => { new Image().src = "/brand/heart-print.png"; }, []);
   const [narrow, setNarrow] = useState(() => {
     try { return localStorage.getItem("fpx.receiptSize") === "80mm"; } catch { return false; }
   });

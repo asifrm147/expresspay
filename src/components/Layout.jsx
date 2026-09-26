@@ -53,7 +53,7 @@ export default function Layout({ groups, base, roleLabel, children }) {
       <aside className="rail">
         <div className="rail-top">
           <div className="brand">
-            <img src="/brand/mark.svg" alt="" width="28" height="28" />
+            <img src="/brand/heart.png" alt="" width="30" height="30" />
             <span>Franklin Park<br /><span className="brand-sub">Express Care</span></span>
           </div>
           <button type="button" className="menu-btn" aria-expanded={menuOpen} aria-controls="nav" onClick={() => setMenuOpen(!menuOpen)}>

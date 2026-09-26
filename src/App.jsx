@@ -11,7 +11,7 @@ function Splash({ children }) {
   return (
     <div className="splash">
       <div className="splash-card">
-        <img className="splash-logo" src="/brand/lockup.svg" alt="Franklin Park Express Care" />
+        <img className="splash-logo" src="/brand/logo.png" alt="Franklin Park Express Care" width="513" height="174" />
         {children}
       </div>
     </div>

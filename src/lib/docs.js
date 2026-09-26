@@ -4,7 +4,7 @@ import { esc, money } from "./format";
 const header = (title, sub = "") => `
   <header class="doc-head">
     <div class="doc-brand">
-      <img class="doc-logo" src="/brand/mark.svg" alt="" />
+      <img class="doc-logo" src="/brand/heart-print.png" alt="" />
       <div>
       <div class="doc-clinic">${esc(CLINIC.name)}</div>
       <div class="doc-small">${esc(CLINIC.address)}<br/>${esc(CLINIC.phone)}</div>

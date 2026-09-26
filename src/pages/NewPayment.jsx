@@ -5,8 +5,9 @@ import { list, create, update, get, and } from "../lib/api";
 import { mapPayment, mapInvoice, mapFee, mapPatient } from "../lib/models";
 import { isoToday, dateWrite, moneyWrite, money, num, toKnack } from "../lib/format";
 import { phoneLast4 } from "../lib/dob";
+import { ptTime } from "../lib/time";
 import { logAudit } from "../lib/audit";
-import { requestOverride, fetchOverride, markOverrideUsed } from "../lib/overrides";
+import { requestOverride, requestManagerReview, withdrawRequest, fetchOverride, markOverrideUsed } from "../lib/overrides";
 import { receiptDoc, superbillDoc } from "../lib/docs";
 import { useSession, usePrint } from "../lib/context";
 import PatientSearch, { PatientForm } from "../components/PatientSearch";
@@ -67,6 +68,13 @@ export default function NewPayment({ base }) {
   const [ovReason, setOvReason] = useState("");
   const [ovErr, setOvErr] = useState(null);
   const [ovBusy, setOvBusy] = useState(false);
+  // "Contact manager": hold this payment until the manager approves it.
+  const [mgr, setMgr] = useState(null);
+  const [mgrOpen, setMgrOpen] = useState(false);
+  const [mgrMsg, setMgrMsg] = useState("");
+  const [mgrErr, setMgrErr] = useState(null);
+  const [mgrBusy, setMgrBusy] = useState(false);
+  const mgrMsgRef = useRef(null);
   const inFlight = useRef(false);
   const amountRef = useRef(null);
   const methodRef = useRef(null);
@@ -85,6 +93,11 @@ export default function NewPayment({ base }) {
     && patient && override.patientId === patient.id && Math.abs(override.requested - num(f.amount)) < 0.005);
   const blocked = differs && !isSuperAdmin && !approved;
   const pending = blocked && override?.status === "Pending" && Math.abs(override.requested - num(f.amount)) < 0.005;
+  const mgrLive = Boolean(mgr && mgr.status !== "Withdrawn");
+  const mgrMatches = Boolean(mgrLive && patient && mgr.patientId === patient.id && Math.abs(mgr.requested - num(f.amount)) < 0.005);
+  const mgrApproved = mgrMatches && mgr.status === "Approved";
+  const mgrPending = mgrMatches && mgr.status === "Pending";
+  const mgrHold = mgrLive && !mgrApproved;
 
   useEffect(() => { loadFees().then(setFees).catch(() => {}); }, []);
 
@@ -117,6 +130,8 @@ export default function NewPayment({ base }) {
   function changePatient() {
     setPatient(null);
     setOverride(null);
+    setMgr(null);
+    setMgrOpen(false);
     setOvReason("");
     setOvErr(null);
     setInvoices([]);
@@ -140,6 +155,10 @@ export default function NewPayment({ base }) {
     setOverride(null);
     setOvReason("");
     setOvErr(null);
+    setMgr(null);
+    setMgrOpen(false);
+    setMgrMsg("");
+    setMgrErr(null);
     setSearchKey((k) => k + 1);
     window.history.replaceState({}, "");
   }, []);
@@ -187,7 +206,8 @@ export default function NewPayment({ base }) {
     const v = validate();
     setErrs(v);
     if (Object.keys(v).length) return;
-    if (blocked) { pending ? checkOverride() : sendOverride(); return; }
+    if (mgrHold) { if (mgrPending) checkMgr(); return; }
+    if (blocked && !mgrApproved) { pending ? checkOverride() : sendOverride(); return; }
     inFlight.current = true;
     setBusy(true);
     setErr(null);
@@ -229,10 +249,16 @@ export default function NewPayment({ base }) {
       [PAY.status]: "Active",
       [PAY.receiptSent]: "Not Sent",
       [PAY.notes]: f.notes.trim(),
+      [PAY.ts]: new Date().toISOString(),
     };
     if (f.invoiceId) body[PAY.invoice] = [{ id: f.invoiceId }];
     const usedOverride = differs && approved ? override : null;
-    if (usedOverride) body[PAY.notes] = [f.notes.trim(), `Price override #${usedOverride.no} (${money(scheduled)} → ${money(f.amount)}) approved by ${usedOverride.respondedBy}.`].filter(Boolean).join("\n");
+    const usedMgr = mgrApproved ? mgr : null;
+    const approvalNotes = [
+      usedOverride && `Price override #${usedOverride.no} (${money(scheduled)} → ${money(f.amount)}) approved by ${usedOverride.respondedBy}.`,
+      usedMgr && `Manager review #${usedMgr.no} approved by ${usedMgr.respondedBy}.`,
+    ].filter(Boolean);
+    if (approvalNotes.length) body[PAY.notes] = [f.notes.trim(), ...approvalNotes].filter(Boolean).join("\n");
 
     let p;
     try {
@@ -247,8 +273,8 @@ export default function NewPayment({ base }) {
     }
 
     const warnings = [];
-    if (usedOverride) {
-      try { await markOverrideUsed(usedOverride.id, p.receiptNo); } catch (ex) { warnings.push(`Override #${usedOverride.no} wasn't marked as used: ${ex.message}`); }
+    for (const r of [usedOverride, usedMgr].filter(Boolean)) {
+      try { await markOverrideUsed(r.id, p.receiptNo); } catch (ex) { warnings.push(`Request #${r.no} wasn't marked as saved: ${ex.message}`); }
     }
     if (f.invoiceId) {
       const inv = invoices.find((i) => i.id === f.invoiceId);
@@ -271,7 +297,7 @@ export default function NewPayment({ base }) {
     const a = await logAudit(user.name, "Created", "Payment", `Receipt #${p.receiptNo}`, `${money(p.amount)} ${p.method} for ${p.paymentFor}`);
     if (a) warnings.push(a);
     setWarn(warnings.join(" ") || null);
-    setSavedAt(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    setSavedAt(ptTime(new Date().toISOString()));
     const done = { ...p, patientName: p.patientName || patient.name };
     setSaved(done);
     setSavedPatient(patient);
@@ -293,6 +319,51 @@ export default function NewPayment({ base }) {
         ? "Connection lost. Check with the super admin before sending the request again."
         : `Request not sent. ${ex.message}`);
     } finally { setOvBusy(false); }
+  }
+
+  function openContact() {
+    const v = validate();
+    setErrs(v);
+    if (Object.keys(v).length) return;
+    setMgrOpen(true);
+    setTimeout(() => mgrMsgRef.current?.focus(), 0);
+  }
+
+  async function sendMgr(e) {
+    e?.preventDefault();
+    if (mgrBusy) return;
+    if (!mgrMsg.trim()) { setMgrErr("Tell the manager what needs approving."); return; }
+    setMgrBusy(true);
+    setMgrErr(null);
+    try {
+      const { request, warning } = await requestManagerReview({ patient, amount: num(f.amount), method, message: mgrMsg.trim(), userName: user.name });
+      setMgr(request);
+      setMgrOpen(false);
+      setWarn(warning);
+    } catch (ex) {
+      setMgrErr(isAmbiguous(ex) ? "Connection lost. Check with the manager before sending again." : `Request not sent. ${ex.message}`);
+    } finally { setMgrBusy(false); }
+  }
+
+  async function checkMgr() {
+    if (mgrBusy || !mgr) return;
+    setMgrBusy(true);
+    setMgrErr(null);
+    try { setMgr(await fetchOverride(mgr.id)); }
+    catch (ex) { setMgrErr(`Couldn't check the request. ${ex.message}`); }
+    finally { setMgrBusy(false); }
+  }
+
+  async function withdrawMgr() {
+    if (mgrBusy || !mgr) return;
+    setMgrBusy(true);
+    try {
+      const w = await withdrawRequest(mgr, user.name);
+      setMgr(null);
+      setMgrMsg("");
+      if (w) setWarn(w);
+    } catch (ex) { setMgrErr(`Couldn't withdraw the request. ${ex.message}`); }
+    finally { setMgrBusy(false); }
   }
 
   async function checkOverride() {
@@ -504,6 +575,33 @@ export default function NewPayment({ base }) {
                 )}
               </div>
 
+              {mgrLive && (
+                <div className={`mgr mgr-${mgr.status.toLowerCase()}`} role="status" aria-live="polite">
+                  {mgrApproved ? (
+                    <p className="override-ok">Approved by {mgr.respondedBy}{mgr.responseNote ? `: ${mgr.responseNote}` : "."} Save when ready.</p>
+                  ) : mgr.status === "Denied" ? (
+                    <>
+                      <p className="override-denied">Request #{mgr.no} was denied by {mgr.respondedBy}{mgr.responseNote ? `: ${mgr.responseNote}` : "."}</p>
+                      <button type="button" className="link" onClick={startOver}>Start over</button>
+                    </>
+                  ) : !mgrMatches ? (
+                    <>
+                      <p>The amount changed after request #{mgr.no} was sent ({money(mgr.requested)}).</p>
+                      <div className="row row-tight">
+                        <button type="button" className="link" onClick={() => setF({ ...f, amount: mgr.requested.toFixed(2) })}>Use {money(mgr.requested)}</button>
+                        <button type="button" className="link link-quiet" onClick={withdrawMgr} disabled={mgrBusy}>Withdraw request</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p>Waiting for manager approval · request #{mgr.no}{mgr.textStatus === "Sent" ? " · texted" : ""}</p>
+                      <button type="button" className="link link-quiet" onClick={withdrawMgr} disabled={mgrBusy}>Withdraw request</button>
+                    </>
+                  )}
+                  {mgrErr && <p className="field-error">{mgrErr}</p>}
+                </div>
+              )}
+
               <ErrorBox error={patient ? err : null} />
               {dupe ? (
                 <div className="msg msg-warn" role="alert">
@@ -514,11 +612,31 @@ export default function NewPayment({ base }) {
                   </div>
                 </div>
               ) : (
-                <button className="btn btn-primary btn-record" disabled={!patient || busy || ovBusy}>
+                <button className="btn btn-primary btn-record" disabled={!patient || busy || ovBusy || mgrBusy || (mgrHold && !mgrPending)}>
                   {busy ? "Recording payment…"
+                    : mgrApproved ? `Save ${money(f.amount)}`
+                    : mgrPending ? (mgrBusy ? "Checking…" : "Check approval")
+                    : mgrHold ? "Waiting on manager"
                     : blocked ? (pending ? (ovBusy ? "Checking…" : "Check approval") : (ovBusy ? "Sending request…" : "Request price approval"))
                     : amountLabel ? `Record ${amountLabel}` : "Record payment"}
                 </button>
+              )}
+
+              {patient && !mgrLive && !dupe && (
+                mgrOpen ? (
+                  <div className="contact">
+                    <Field label="Message to manager" hint="Goes to the approval queue. The text only says a request is waiting." error={mgrErr}>
+                      {(p) => <textarea {...p} ref={mgrMsgRef} rows={2} value={mgrMsg} onChange={(e) => { setMgrMsg(e.target.value); setMgrErr(null); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMgr(); } if (e.key === "Escape") setMgrOpen(false); }} />}
+                    </Field>
+                    <div className="row row-tight">
+                      <button type="button" className="btn btn-secondary" onClick={sendMgr} disabled={mgrBusy}>{mgrBusy ? "Sending…" : "Send to manager"}</button>
+                      <button type="button" className="link link-quiet" onClick={() => setMgrOpen(false)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="link link-quiet contact-link" onClick={openContact}>Contact manager</button>
+                )
               )}
             </fieldset>
           </form>

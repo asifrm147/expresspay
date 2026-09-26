@@ -40,7 +40,7 @@ export default function SuperAdminView() {
       { to: `${B}/reports`, label: "Reports" },
     ] },
     { label: "Administration", items: [
-      { to: `${B}/overrides`, label: "Price overrides", badge: pending },
+      { to: `${B}/approvals`, label: "Approvals", badge: pending },
       { to: `${B}/fees`, label: "Fee schedule" },
       { to: `${B}/audit`, label: "Audit log" },
     ] },
@@ -54,7 +54,8 @@ export default function SuperAdminView() {
         <Route path="invoices" element={<Invoices base={B} canVoid />} />
         <Route path="close" element={<DailyClose base={B} seeAll />} />
         <Route path="reports" element={<Reports />} />
-        <Route path="overrides" element={<Overrides />} />
+        <Route path="approvals" element={<Overrides />} />
+        <Route path="overrides" element={<Navigate to={`${B}/approvals`} replace />} />
         <Route path="fees" element={<FeeSchedule />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="*" element={<Navigate to={B} replace />} />

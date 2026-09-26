@@ -27,7 +27,7 @@ export const PAY = {
   method: "field_68", last4: "field_69", txnRef: "field_70", insName: "field_71",
   memberId: "field_72", group: "field_73", cpt: "field_74", icd: "field_75",
   collectedBy: "field_76", status: "field_77", voidReason: "field_78",
-  receiptSent: "field_79", notes: "field_80", createdOn: "field_82",
+  receiptSent: "field_79", notes: "field_80", createdOn: "field_82", ts: "field_201",
   patient: "field_155", invoice: "field_159",
 };
 
@@ -55,7 +55,11 @@ export const OVR = {
   no: "field_172", service: "field_173", scheduled: "field_174", requested: "field_175", reason: "field_176",
   requestedBy: "field_177", status: "field_178", respondedBy: "field_179", responseNote: "field_180",
   receiptNo: "field_181", textStatus: "field_182", createdOn: "field_184", patient: "field_189",
+  type: "field_198", assignedTo: "field_199", summary: "field_200",
 };
+
+// Who approves price overrides and manager reviews (in-app queue + text).
+export const APPROVER_EMAIL = "asif.malik@psychiatrygroup.com";
 
 export const AUD = { ts: "field_197", createdOn: "field_150", time: "field_143", action: "field_144", recordType: "field_145", ref: "field_146", user: "field_147", details: "field_148" };
 

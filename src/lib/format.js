@@ -1,9 +1,9 @@
+import { ptTodayIso } from "./time";
+
 const pad = (n) => String(n).padStart(2, "0");
 
-export function isoToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
+// "Today" is always the clinic's day (Pacific), not the computer's.
+export const isoToday = () => ptTodayIso();
 export function addDays(iso, n) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(y, m - 1, d + n);
@@ -28,9 +28,9 @@ export function fromKnack(mdy) {
 }
 export const dateWrite = (iso) => ({ date: toKnack(iso), all_day: true });
 export function nowWrite() {
-  const d = new Date();
-  const h = d.getHours() % 12 || 12;
-  return { date: toKnack(isoToday()), time: `${pad(h)}:${pad(d.getMinutes())}${d.getHours() < 12 ? "am" : "pm"}`, all_day: false };
+  const t = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true }).formatToParts(new Date());
+  const g = (k) => t.find((p) => p.type === k)?.value || "";
+  return { date: toKnack(isoToday()), time: `${pad(g("hour"))}:${g("minute")}${g("dayPeriod").toLowerCase()}`, all_day: false };
 }
 
 export const num = (v) => {

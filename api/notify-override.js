@@ -12,7 +12,7 @@
 
 const APP_ID = "6ab750236f2f55328950a5fd";
 const OBJ = "object_13";
-const F = { no: "field_172", service: "field_173", scheduled: "field_174", requested: "field_175", requestedBy: "field_177", status: "field_178", textStatus: "field_182" };
+const F = { no: "field_172", service: "field_173", scheduled: "field_174", requested: "field_175", requestedBy: "field_177", status: "field_178", textStatus: "field_182", type: "field_198", summary: "field_200" };
 
 const money = (v) => Number(String(v ?? "").replace(/[^0-9.-]/g, "") || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
 const raw = (r, k) => r?.[`${k}_raw`] ?? r?.[k] ?? "";
@@ -42,10 +42,14 @@ export default async function handler(req, res) {
   if (raw(r, F.status) !== "Pending") return res.status(409).json({ error: "Request is no longer pending" });
   if (raw(r, F.textStatus) === "Sent") return res.status(200).json({ sent: false, reason: "already sent" });
 
-  const link = `${(appUrl || "").replace(/\/$/, "")}/admin/overrides`;
-  const text = `Franklin Park: price override #${raw(r, F.no)} needs your review. `
-    + `${raw(r, F.service)}: ${money(raw(r, F.scheduled))} scheduled, ${money(raw(r, F.requested))} requested by ${raw(r, F.requestedBy) || "staff"}. `
-    + `Review: ${link}`;
+  // Staff-typed messages are never included: they could contain patient details.
+  const link = `${(appUrl || "").replace(/\/$/, "")}/admin/approvals`;
+  const who = raw(r, F.requestedBy) || "Staff";
+  const text = raw(r, F.type) === "Manager Review"
+    ? `Franklin Park: ${who} is asking for your approval on a payment (#${raw(r, F.no)}, ${raw(r, F.summary) || money(raw(r, F.requested))}). Review: ${link}`
+    : `Franklin Park: price override #${raw(r, F.no)} needs your review. `
+      + `${raw(r, F.service)}: ${money(raw(r, F.scheduled))} scheduled, ${money(raw(r, F.requested))} requested by ${who}. `
+      + `Review: ${link}`;
 
   const t = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",

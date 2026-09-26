@@ -1,5 +1,6 @@
 import { PAT, PAY, REF, INV, CLS, FEE, AUD, OVR } from "../config";
 import { rawDate, rawNum, rawText, rawName, rawEmail, rawPhone, connId, connLabel } from "./format";
+import { ptDate, ptTime } from "./time";
 
 function timeOf(raw) {
   if (!raw || raw.hours == null) return "";
@@ -40,8 +41,10 @@ export const mapPayment = (r) => ({
   voidReason: rawText(r, PAY.voidReason),
   receiptSent: rawText(r, PAY.receiptSent),
   notes: rawText(r, PAY.notes),
-  createdDate: rawDate(r, PAY.createdOn),
-  createdTime: timeOf(r[`${PAY.createdOn}_raw`]),
+  // Exact Pacific time when the app recorded it; older records fall back to Knack's Created On.
+  ts: rawText(r, PAY.ts),
+  createdDate: rawText(r, PAY.ts) ? ptDate(rawText(r, PAY.ts)) : rawDate(r, PAY.createdOn),
+  createdTime: rawText(r, PAY.ts) ? ptTime(rawText(r, PAY.ts)) : timeOf(r[`${PAY.createdOn}_raw`]),
   patientId: connId(r, PAY.patient),
   patientName: connLabel(r, PAY.patient),
   invoiceId: connId(r, PAY.invoice),
@@ -106,9 +109,7 @@ export const mapFee = (r) => ({
 function auditTime(r) {
   const iso = rawText(r, AUD.ts);
   const d = iso ? new Date(iso) : null;
-  if (d && !Number.isNaN(d.getTime())) {
-    return d.toLocaleString([], { month: "2-digit", day: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
-  }
+  if (d && !Number.isNaN(d.getTime())) return `${ptDate(iso)}, ${ptTime(iso, { seconds: true })}`;
   const c = r[`${AUD.createdOn}_raw`];
   if (c?.date && c.hours != null) return `${c.date} ${Number(c.hours)}:${String(c.minutes ?? 0).padStart(2, "0")} ${String(c.am_pm || "").toUpperCase()}`;
   return typeof r[AUD.time] === "string" ? r[AUD.time] : "";
@@ -140,4 +141,7 @@ export const mapOverride = (r) => ({
   created: typeof r[OVR.createdOn] === "string" ? r[OVR.createdOn] : "",
   patientId: connId(r, OVR.patient),
   patientName: connLabel(r, OVR.patient),
+  type: rawText(r, OVR.type) || "Price Override",
+  assignedTo: rawText(r, OVR.assignedTo),
+  summary: rawText(r, OVR.summary),
 });

@@ -28,6 +28,13 @@ React (Vite) app on Vercel, backed by the Knack app "FranklinPark Express Care P
 - Text/email receipts
 - Practice Books sync (Reports > "Export summary" produces the no-patient-info file it will use)
 
+## Approvals (super admin) — /admin/approvals
+Two kinds of request land here, addressed to asif.malik@psychiatrygroup.com (APPROVER_EMAIL in src/config.js):
+- Contact manager: staff hold any payment for approval with a short message. Once approved, the
+  button becomes "Save $X". Staff can withdraw a pending request; a denied payment can't be saved.
+- Price overrides (below).
+Both text 509-850-1098 (OVERRIDE_ALERT_TO) with a link; staff messages are never put in the text.
+
 ## Price overrides (super admin)
 - Super admins (Knack role "Super Admins") own the fee schedule and approve price overrides at /admin/overrides.
 - Front desk and managers who pick a fee-schedule service and change its price must request approval;

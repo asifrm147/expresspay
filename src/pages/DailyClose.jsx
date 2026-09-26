@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { OBJ, PAY, REF, CLS, CARD_METHODS } from "../config";
 import { listAll, list, create, update, and } from "../lib/api";
 import { mapPayment, mapRefund, mapClose } from "../lib/models";
-import { isoToday, toKnack, dateWrite, moneyWrite, money, num } from "../lib/format";
+import { isoToday, addDays, rangeRules, toKnack, dateWrite, moneyWrite, money, num } from "../lib/format";
 import { logAudit } from "../lib/audit";
 import { closeDoc } from "../lib/docs";
 import { useSession, usePrint } from "../lib/context";
@@ -54,7 +54,7 @@ export default function DailyClose({ seeAll = false, base }) {
     try {
       const day = toKnack(date);
       const [p, r, c] = await Promise.all([
-        listAll(OBJ.payments, { filters: and({ field: PAY.createdOn, operator: "is", value: day }) }),
+        listAll(OBJ.payments, { filters: and(rangeRules(PAY.createdOn, addDays(date, -1), addDays(date, 1))) }).then((rows) => rows.filter((x) => mapPayment(x).createdDate === day)),
         listAll(OBJ.refunds, { filters: and({ field: REF.status, operator: "is", value: "Processed" }, { field: REF.refundDate, operator: "is", value: day }) }),
         list(OBJ.closes, { filters: and({ field: CLS.date, operator: "is", value: day }), perPage: 50 }),
       ]);

@@ -23,7 +23,7 @@ export function SessionProvider({ children, fallback, errorView }) {
 
   const value = useMemo(() => {
     const keys = state.user?.profileKeys || [];
-    return { ...state, isManager: keys.includes(PROFILES.manager), isFrontDesk: keys.includes(PROFILES.frontDesk) };
+    return { ...state, isManager: keys.includes(PROFILES.manager), isFrontDesk: keys.includes(PROFILES.frontDesk), isSuperAdmin: keys.includes(PROFILES.superAdmin) };
   }, [state]);
 
   if (state.loading) return fallback;

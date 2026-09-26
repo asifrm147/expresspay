@@ -6,6 +6,7 @@ import { nowWrite } from "./format";
 export async function logAudit(user, action, recordType, ref, details = "") {
   try {
     await create(OBJ.audit, {
+      [AUD.ts]: new Date().toISOString(),
       [AUD.time]: nowWrite(),
       [AUD.action]: action,
       [AUD.recordType]: recordType,

@@ -6,6 +6,7 @@ import { mapPayment, mapInvoice, mapFee, mapPatient } from "../lib/models";
 import { isoToday, dateWrite, moneyWrite, money, num, toKnack } from "../lib/format";
 import { longDate, maskedPhone } from "../lib/dob";
 import { logAudit } from "../lib/audit";
+import { requestOverride, fetchOverride, markOverrideUsed } from "../lib/overrides";
 import { receiptDoc, superbillDoc } from "../lib/docs";
 import { useSession, usePrint } from "../lib/context";
 import PatientSearch, { PatientForm } from "../components/PatientSearch";
@@ -55,7 +56,7 @@ function Steps({ step }) {
 }
 
 export default function NewPayment({ base }) {
-  const { user } = useSession();
+  const { user, isSuperAdmin } = useSession();
   const { print } = usePrint();
   const loc = useLocation();
   const nav = useNavigate();
@@ -74,6 +75,10 @@ export default function NewPayment({ base }) {
   const [savedAt, setSavedAt] = useState("");
   const [dupe, setDupe] = useState(null);
   const [searchKey, setSearchKey] = useState(0);
+  const [override, setOverride] = useState(null);
+  const [ovReason, setOvReason] = useState("");
+  const [ovErr, setOvErr] = useState(null);
+  const [ovBusy, setOvBusy] = useState(false);
   const inFlight = useRef(false);
   const amountRef = useRef(null);
   const methodRef = useRef(null);
@@ -83,6 +88,15 @@ export default function NewPayment({ base }) {
   const method = f.top === "Card" ? f.cardType : f.top;
   const isCard = f.top === "Card";
   const needsIns = f.top === "Insurance" || ["Copay", "Deductible Or Coinsurance"].includes(f.paymentFor);
+
+  // Price override: a fee-schedule service with a different amount needs super admin approval.
+  const fee = fees.find((x) => x.id === f.feeId);
+  const scheduled = fee && fee.price > 0 ? fee.price : null;
+  const differs = scheduled !== null && num(f.amount) > 0 && Math.abs(num(f.amount) - scheduled) >= 0.005;
+  const approved = Boolean(override && override.status === "Approved" && fee && override.service === fee.name
+    && patient && override.patientId === patient.id && Math.abs(override.requested - num(f.amount)) < 0.005);
+  const blocked = differs && !isSuperAdmin && !approved;
+  const pending = blocked && override?.status === "Pending" && Math.abs(override.requested - num(f.amount)) < 0.005;
 
   useEffect(() => { loadFees().then(setFees).catch(() => {}); }, []);
 
@@ -122,6 +136,9 @@ export default function NewPayment({ base }) {
     setErr(null);
     setDupe(null);
     setShowDetails(false);
+    setOverride(null);
+    setOvReason("");
+    setOvErr(null);
     setSearchKey((k) => k + 1);
     window.history.replaceState({}, "");
   }, []);
@@ -169,6 +186,7 @@ export default function NewPayment({ base }) {
     const v = validate();
     setErrs(v);
     if (Object.keys(v).length) return;
+    if (blocked) { pending ? checkOverride() : sendOverride(); return; }
     inFlight.current = true;
     setBusy(true);
     setErr(null);
@@ -212,6 +230,8 @@ export default function NewPayment({ base }) {
       [PAY.notes]: f.notes.trim(),
     };
     if (f.invoiceId) body[PAY.invoice] = [{ id: f.invoiceId }];
+    const usedOverride = differs && approved ? override : null;
+    if (usedOverride) body[PAY.notes] = [f.notes.trim(), `Price override #${usedOverride.no} (${money(scheduled)} → ${money(f.amount)}) approved by ${usedOverride.respondedBy}.`].filter(Boolean).join("\n");
 
     let p;
     try {
@@ -226,6 +246,9 @@ export default function NewPayment({ base }) {
     }
 
     const warnings = [];
+    if (usedOverride) {
+      try { await markOverrideUsed(usedOverride.id, p.receiptNo); } catch (ex) { warnings.push(`Override #${usedOverride.no} wasn't marked as used: ${ex.message}`); }
+    }
     if (f.invoiceId) {
       const inv = invoices.find((i) => i.id === f.invoiceId);
       if (inv) {
@@ -250,6 +273,31 @@ export default function NewPayment({ base }) {
     setSavedAt(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
     setSaved({ ...p, patientName: p.patientName || patient.name });
     release();
+  }
+
+  async function sendOverride() {
+    if (ovBusy) return;
+    if (!ovReason.trim()) { setOvErr("Enter the reason for the different price."); return; }
+    setOvBusy(true);
+    setOvErr(null);
+    try {
+      const { request, warning } = await requestOverride({ patient, fee, amount: num(f.amount), reason: ovReason.trim(), userName: user.name });
+      setOverride(request);
+      setWarn(warning);
+    } catch (ex) {
+      setOvErr(isAmbiguous(ex)
+        ? "Connection lost. Check with the super admin before sending the request again."
+        : `Request not sent. ${ex.message}`);
+    } finally { setOvBusy(false); }
+  }
+
+  async function checkOverride() {
+    if (ovBusy || !override) return;
+    setOvBusy(true);
+    setOvErr(null);
+    try { setOverride(await fetchOverride(override.id)); }
+    catch (ex) { setOvErr(`Couldn't check the request. ${ex.message}`); }
+    finally { setOvBusy(false); }
   }
 
   async function printReceipt() {
@@ -367,6 +415,31 @@ export default function NewPayment({ base }) {
             )}
           </Field>
 
+          {differs && isSuperAdmin && <p className="hint override-note">Scheduled price {money(scheduled)}. Changed by you as super admin.</p>}
+          {differs && !isSuperAdmin && (
+            <div className="override" role="region" aria-label="Price approval">
+              {approved ? (
+                <p className="override-ok">Override #{override.no} approved by {override.respondedBy}.</p>
+              ) : pending ? (
+                <>
+                  <p>Override #{override.no} is waiting for approval.{override.textStatus === "Sent" && " The super admin has been texted."}</p>
+                  <button type="button" className="link" onClick={checkOverride} disabled={ovBusy}>{ovBusy ? "Checking…" : "Check approval"}</button>
+                </>
+              ) : (
+                <>
+                  {override?.status === "Denied" && Math.abs(override.requested - num(f.amount)) < 0.005 && (
+                    <p className="override-denied">Override #{override.no} was denied by {override.respondedBy}{override.responseNote ? `: ${override.responseNote}` : "."}</p>
+                  )}
+                  <p>The scheduled price for {fee.name} is {money(scheduled)}. A different amount needs super admin approval.</p>
+                  <Field label="Reason" error={typeof ovErr === "string" ? ovErr : null}>
+                    {(p) => <input {...p} className="w-lg" autoComplete="off" value={ovReason} onChange={(e) => { setOvReason(e.target.value); setOvErr(null); }} />}
+                  </Field>
+                </>
+              )}
+              <button type="button" className="link" onClick={() => setF({ ...f, amount: scheduled.toFixed(2) })}>Use {money(scheduled)} instead</button>
+            </div>
+          )}
+
           <div className="field">
             <span className="label">Payment method</span>
             <ChoiceGroup label="Payment method" options={TOP_METHODS} value={f.top} onChange={(v) => setF({ ...f, top: v })} onEnter={methodEnter} firstRef={methodRef} />
@@ -447,8 +520,10 @@ export default function NewPayment({ base }) {
             </div>
           ) : (
             <div className="row">
-              <button className="btn btn-primary btn-wide" disabled={busy}>
-                {busy ? "Recording payment…" : amountLabel ? `Record ${amountLabel} payment` : "Record payment"}
+              <button className="btn btn-primary btn-wide" disabled={busy || ovBusy}>
+                {busy ? "Recording payment…"
+                  : blocked ? (pending ? (ovBusy ? "Checking…" : "Check approval") : (ovBusy ? "Sending request…" : "Request price approval"))
+                  : amountLabel ? `Record ${amountLabel} payment` : "Record payment"}
               </button>
             </div>
           )}

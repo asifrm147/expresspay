@@ -6,7 +6,7 @@ import Refunds from "../pages/Refunds";
 import Invoices from "../pages/Invoices";
 import DailyClose from "../pages/DailyClose";
 import Reports from "../pages/Reports";
-import { FeeSchedule, AuditLog } from "../pages/Admin";
+import { AuditLog } from "../pages/Admin";
 
 const B = "/manager";
 const GROUPS = [
@@ -21,7 +21,6 @@ const GROUPS = [
     { to: `${B}/reports`, label: "Reports" },
   ] },
   { label: "Administration", items: [
-    { to: `${B}/fees`, label: "Fee schedule" },
     { to: `${B}/audit`, label: "Audit log" },
   ] },
 ];
@@ -36,7 +35,6 @@ export default function ManagerView() {
         <Route path="invoices" element={<Invoices base={B} canVoid />} />
         <Route path="close" element={<DailyClose base={B} seeAll />} />
         <Route path="reports" element={<Reports />} />
-        <Route path="fees" element={<FeeSchedule />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="*" element={<Navigate to={B} replace />} />
       </Routes>

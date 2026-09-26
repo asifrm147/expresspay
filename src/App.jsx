@@ -4,6 +4,7 @@ import { getTokens, startLogin, completeLogin, logout } from "./lib/auth";
 import { SessionProvider, PrintProvider, useSession } from "./lib/context";
 import FrontDeskView from "./views/FrontDeskView";
 import ManagerView from "./views/ManagerView";
+import SuperAdminView from "./views/SuperAdminView";
 import { ErrorBox } from "./components/ui";
 
 function Splash({ children }) {
@@ -54,23 +55,24 @@ function Callback() {
 }
 
 function RoleHome() {
-  const { isManager, isFrontDesk } = useSession();
-  if (isManager && isFrontDesk) {
+  const { isManager, isFrontDesk, isSuperAdmin } = useSession();
+  const spaces = [isSuperAdmin && ["/admin", "Super admin"], isManager && ["/manager", "Manager"], isFrontDesk && ["/desk", "Front desk"]].filter(Boolean);
+  if (spaces.length > 1) {
     return (
       <Splash>
         <p>Open which workspace?</p>
         <div className="row">
-          <a className="btn btn-primary" href="/manager">Manager</a>
-          <a className="btn btn-secondary" href="/desk">Front desk</a>
+          {spaces.map(([href, label], i) => <a key={href} className={`btn ${i === 0 ? "btn-primary" : "btn-secondary"}`} href={href}>{label}</a>)}
         </div>
       </Splash>
     );
   }
+  if (isSuperAdmin) return <Navigate to="/admin" replace />;
   if (isManager) return <Navigate to="/manager" replace />;
   if (isFrontDesk) return <Navigate to="/desk" replace />;
   return (
     <Splash>
-      <p>Your account is signed in but hasn't been given a front desk or manager role yet. Ask a manager to add you.</p>
+      <p>Your account is signed in but hasn't been given a role yet. Ask a manager to add you.</p>
       <button type="button" className="btn btn-secondary" onClick={() => logout()}>Sign out</button>
     </Splash>
   );
@@ -98,6 +100,7 @@ function Protected() {
           <Route index element={<RoleHome />} />
           <Route path="desk/*" element={<RoleGate allow="isFrontDesk"><FrontDeskView /></RoleGate>} />
           <Route path="manager/*" element={<RoleGate allow="isManager"><ManagerView /></RoleGate>} />
+          <Route path="admin/*" element={<RoleGate allow="isSuperAdmin"><SuperAdminView /></RoleGate>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </PrintProvider>

@@ -64,7 +64,12 @@ export default function Layout({ groups, base, roleLabel, children }) {
           {groups.map((g, gi) => (
             <div className="nav-group" key={gi} role="group" aria-label={g.label || "Payments"}>
               {g.label && <span className="nav-label">{g.label}</span>}
-              {g.items.map((n) => <NavLink key={n.to} to={n.to} end={n.end}>{n.label}</NavLink>)}
+              {g.items.map((n) => (
+                <NavLink key={n.to} to={n.to} end={n.end}>
+                  {n.label}
+                  {n.badge > 0 && <span className="nav-badge" aria-label={`${n.badge} waiting`}>{n.badge}</span>}
+                </NavLink>
+              ))}
             </div>
           ))}
           <div className="rail-foot">

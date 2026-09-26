@@ -3,7 +3,7 @@ export const APP_ID = "6ab750236f2f55328950a5fd";
 export const CLIENT_ID = "6ab7512b05445ccd87911b8c";
 export const API = "https://api.knack.com";
 
-export const PROFILES = { frontDesk: "profile_3", manager: "profile_4" };
+export const PROFILES = { frontDesk: "profile_3", manager: "profile_4", superAdmin: "profile_12" };
 
 export const OBJ = {
   patients: "object_5",
@@ -13,6 +13,7 @@ export const OBJ = {
   closes: "object_9",
   fees: "object_10",
   audit: "object_11",
+  overrides: "object_13",
 };
 
 export const PAT = {
@@ -50,7 +51,13 @@ export const CLS = {
 
 export const FEE = { name: "field_132", paymentFor: "field_133", price: "field_134", cpt: "field_135", availability: "field_136" };
 
-export const AUD = { time: "field_143", action: "field_144", recordType: "field_145", ref: "field_146", user: "field_147", details: "field_148" };
+export const OVR = {
+  no: "field_172", service: "field_173", scheduled: "field_174", requested: "field_175", reason: "field_176",
+  requestedBy: "field_177", status: "field_178", respondedBy: "field_179", responseNote: "field_180",
+  receiptNo: "field_181", textStatus: "field_182", createdOn: "field_184", patient: "field_189",
+};
+
+export const AUD = { ts: "field_197", createdOn: "field_150", time: "field_143", action: "field_144", recordType: "field_145", ref: "field_146", user: "field_147", details: "field_148" };
 
 // Option lists: must match Knack exactly (case-sensitive).
 export const PAYMENT_FOR = ["Self-Pay Visit", "Copay", "Deductible Or Coinsurance", "Procedure", "Labs", "Forms Or Letters", "Prior Balance", "Other"];

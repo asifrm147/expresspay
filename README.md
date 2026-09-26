@@ -27,3 +27,17 @@ React (Vite) app on Vercel, backed by the Knack app "FranklinPark Express Care P
 - Sphere card terminal (staff enter card last 4 + Sphere transaction ID for now)
 - Text/email receipts
 - Practice Books sync (Reports > "Export summary" produces the no-patient-info file it will use)
+
+## Price overrides (super admin)
+- Super admins (Knack role "Super Admins") own the fee schedule and approve price overrides at /admin/overrides.
+- Front desk and managers who pick a fee-schedule service and change its price must request approval;
+  the payment can't be recorded until a super admin approves that exact amount.
+- Each request texts the super admin. Text contains no patient information.
+
+### Text messages (Vercel → Settings → Environment Variables, then redeploy)
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_FROM_NUMBER=+1XXXXXXXXXX      (a Twilio number registered for US texting)
+OVERRIDE_ALERT_TO=+15098501098
+APP_URL=https://fpx-chi.vercel.app
+Until these are set, requests still reach the super admin's queue; the app says the text didn't go out.

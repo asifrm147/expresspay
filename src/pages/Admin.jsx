@@ -124,7 +124,7 @@ export function AuditLog() {
     setRows(null);
     setErr(null);
     try {
-      const d = await list(OBJ.audit, { filters: and(rangeRules(AUD.time, from, to)), sort: AUD.time, order: "desc", perPage: 1000 });
+      const d = await list(OBJ.audit, { filters: and(rangeRules(AUD.createdOn, from, to)), sort: AUD.createdOn, order: "desc", perPage: 1000 });
       setRows((d.records || []).map(mapAudit));
     } catch (e) { setErr(e); setRows([]); }
   }, [from, to]);
